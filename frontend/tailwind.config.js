@@ -5,10 +5,10 @@ export default {
   theme: {
     extend: {
       colors: {
-        primary: { 50: '#eff6ff', 100: '#dbeafe', 200: '#bfdbfe', 300: '#93c5fd', 400: '#60a5fa', 500: '#3b82f6', 600: '#2563eb', 700: '#1d4ed8', 800: '#1e40af', 900: '#1e3a8a' },
-        success: { 50: '#f0fdf4', 500: '#22c55e', 600: '#16a34a' },
-        warning: { 50: '#fffbeb', 500: '#f59e0b', 600: '#d97706' },
-        danger: { 50: '#fef2f2', 500: '#ef4444', 600: '#dc2626' }
+        primary: { 50: 'var(--primary-50)', 100: 'var(--primary-100)', 200: 'var(--primary-200)', 300: 'var(--primary-300)', 400: 'var(--primary-400)', 500: 'var(--primary-500)', 600: 'var(--primary-600)', 700: 'var(--primary-700)', 800: 'var(--primary-800)', 900: 'var(--primary-900)' },
+        success: { 50: 'var(--success-50)', 500: 'var(--success-500)', 600: 'var(--success-600)' },
+        warning: { 50: 'var(--warning-50)', 500: 'var(--warning-500)', 600: 'var(--warning-600)' },
+        danger: { 50: 'var(--danger-50)', 500: 'var(--danger-500)', 600: 'var(--danger-600)' }
       }
     }
   },
