@@ -20,14 +20,14 @@ frontend/  — SPA React (Vite + TypeScript + Tailwind)
 # Backend
 cd backend
 cp .env.example .env   # configurar DATABASE_URL e JWT_SECRET
-npm install
-npm run dev
+bun install
+bun run dev
 
 # Frontend
 cd frontend
 cp .env.example .env   # configurar VITE_API_URL
-npm install
-npm run dev
+bun install
+bun run dev
 ```
 
 ## Funcionalidades
