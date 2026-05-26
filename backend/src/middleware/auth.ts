@@ -49,7 +49,7 @@ export function optionalAuth(req: Request, _res: Response, next: NextFunction) {
   if (header && header.startsWith('Bearer ')) {
     try {
       const token = header.split(' ')[1];
-      req.user = jwt.verify(token, JWT_SECRET) as JwtPayload;
+      req.user = jwt.verify(token, getJwtSecret()) as JwtPayload;
     } catch { /* token inválido, segue sem user */ }
   }
   next();
