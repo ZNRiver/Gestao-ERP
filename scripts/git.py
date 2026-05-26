@@ -49,12 +49,24 @@ def git_sync(message):
     git_push()
 
 # 🔥 NOVO COMANDO
-def git_remove(file):
-    if not os.path.exists(os.path.join(GIT_DIR, file)):
-        print(f"❌ Arquivo '{file}' não existe")
+def git_remove(path):
+    full_path = os.path.join(GIT_DIR, path)
+
+    if not os.path.exists(full_path):
+        print(f"❌ '{path}' não existe")
         return
-    run(["git", "rm", file])
-    print(f"✅ '{file}' removido do repositório. Lembre-se de dar commit!")
+
+    cmd = ["git", "rm"]
+
+    # Se for diretório adiciona -r
+    if os.path.isdir(full_path):
+        cmd.append("-r")
+
+    cmd.append(path)
+
+    run(cmd)
+
+    print(f"✅ '{path}' removido do repositório. Lembre-se de dar commit!")
 
 # 🔥 NOVO COMANDO
 def git_clear():
