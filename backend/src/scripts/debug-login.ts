@@ -1,48 +1,39 @@
-import { createClient } from '@supabase/supabase-js';
+import bcrypt from 'bcryptjs';
 import dotenv from 'dotenv';
+import { query } from '../lib/db.js';
+
 dotenv.config();
 
 async function debugLogin() {
-  const email = 'kauazin352911@gmail.com';
-  const password = '352911kkK?';
+  const email = process.env.ADMIN_EMAIL || 'admin@erp.com';
+  const password = process.env.ADMIN_PASSWORD || 'Admin@123';
 
-  console.log('Usando SERVICE_ROLE_KEY (igual ao backend):\n');
+  console.log(`Testando login com ${email}...\n`);
 
-  const svcClient = createClient(
-    process.env.SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!,
-    { auth: { autoRefreshToken: false, persistSession: false } }
+  const row = await query<{ id: string; email: string; nome: string; role: string; password_hash: string }>(
+    `SELECT id, email, nome, role, password_hash FROM profiles WHERE email = $1`,
+    [email],
   );
 
-  // Step 1: signInWithPassword
-  const { data: authData, error: authError } = await svcClient.auth.signInWithPassword({ email, password });
-  if (authError) {
-    console.log(`❌ signInWithPassword erro: ${authError.message}`);
+  if (row.length === 0) {
+    console.log(`❌ Nenhum usuário com email ${email} no banco.`);
     return;
   }
-  console.log(`✅ signInWithPassword OK`);
-  console.log(`   user.id: ${authData.user?.id}`);
 
-  // Step 2: query profiles
-  const { data: profile, error: profileError } = await svcClient
-    .from('profiles')
-    .select('*')
-    .eq('id', authData.user?.id)
-    .single();
+  const profile = row[0];
+  console.log(`✅ Usuário encontrado: ${profile.nome} (role: ${profile.role})`);
+  console.log(`   id: ${profile.id}`);
 
-  if (profileError) {
-    console.log(`❌ profiles query erro: ${profileError.message}`);
-    console.log(`   Detalhes:`, JSON.stringify(profileError));
-  } else if (profile) {
-    console.log(`✅ Profile encontrado: ${JSON.stringify(profile)}`);
+  const senhaOk = await bcrypt.compare(password, profile.password_hash);
+  if (senhaOk) {
+    console.log('✅ Senha válida');
   } else {
-    console.log(`❌ Profile retornou null`);
+    console.log('❌ Senha inválida');
   }
 
-  // Step 3: try query without .single() to see all profiles
-  console.log(`\n📋 Todos os profiles:`);
-  const { data: all } = await svcClient.from('profiles').select('*');
-  console.log(JSON.stringify(all));
+  console.log('\n📋 Todos os profiles:');
+  const all = await query(`SELECT id, nome, email, role FROM profiles`);
+  console.log(JSON.stringify(all, null, 2));
 }
 
 debugLogin().catch(console.error);

@@ -1,73 +1,90 @@
-import { supabase } from '../lib/supabase.js';
-import { Colaborador, Cargo, RegistroPonto, Falta } from '../types/index.js';
+import { buildUpdateSql, query, queryOne } from '../lib/db.js';
+import { Cargo, Colaborador, Falta, RegistroPonto } from '../types/index.js';
 
 export const colaboradorService = {
   async list() {
-    const { data, error } = await supabase
-      .from('colaboradores')
-      .select('*, cargo:cargos(*)')
-      .order('nome');
-    if (error) throw new Error(error.message);
-    return data as Colaborador[];
+    return query<Colaborador>(
+      `SELECT c.*, to_jsonb(cj) AS cargo
+       FROM colaboradores c
+       LEFT JOIN cargos cj ON cj.id = c.cargo_id
+       ORDER BY c.nome`,
+    );
   },
 
   async getById(id: string) {
-    const { data, error } = await supabase
-      .from('colaboradores')
-      .select('*, cargo:cargos(*)')
-      .eq('id', id)
-      .single();
-    if (error) throw new Error(error.message);
-    return data as Colaborador;
+    const row = await queryOne<Colaborador>(
+      `SELECT c.*, to_jsonb(cj) AS cargo
+       FROM colaboradores c
+       LEFT JOIN cargos cj ON cj.id = c.cargo_id
+       WHERE c.id = $1`,
+      [id],
+    );
+    if (!row) throw new Error('Colaborador não encontrado');
+    return row;
   },
 
   async create(payload: Partial<Colaborador>) {
-    const { data, error } = await supabase
-      .from('colaboradores')
-      .insert(payload)
-      .select()
-      .single();
-    if (error) throw new Error(error.message);
-    return data as Colaborador;
+    const row = await queryOne<Colaborador>(
+      `INSERT INTO colaboradores
+         (profile_id, cargo_id, matricula, nome, cpf, data_admissao, data_desligamento, status, salario)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+       RETURNING *`,
+      [
+        payload.profile_id || null,
+        payload.cargo_id || null,
+        payload.matricula,
+        payload.nome,
+        payload.cpf || null,
+        payload.data_admissao || null,
+        payload.data_desligamento || null,
+        payload.status || 'ativo',
+        payload.salario ?? 0,
+      ],
+    );
+    if (!row) throw new Error('Erro ao criar colaborador');
+    return row;
   },
 
   async update(id: string, payload: Partial<Colaborador>) {
-    const { data, error } = await supabase
-      .from('colaboradores')
-      .update(payload)
-      .eq('id', id)
-      .select()
-      .single();
-    if (error) throw new Error(error.message);
-    return data as Colaborador;
+    const { text, params } = buildUpdateSql('colaboradores', payload, { withUpdatedAt: true });
+    const row = await queryOne<Colaborador>(text, [id, ...params]);
+    if (!row) throw new Error('Colaborador não encontrado');
+    return row;
   },
 
   async delete(id: string) {
-    const { data: colab } = await supabase.from('colaboradores').select('profile_id').eq('id', id).single();
-    const { error } = await supabase.from('colaboradores').delete().eq('id', id);
-    if (error) throw new Error(error.message);
+    const colab = await queryOne<{ profile_id: string | null }>(
+      `SELECT profile_id FROM colaboradores WHERE id = $1`,
+      [id],
+    );
+    await query(`DELETE FROM colaboradores WHERE id = $1`, [id]);
     if (colab?.profile_id) {
-      await supabase.from('profiles').delete().eq('id', colab.profile_id);
+      await query(`DELETE FROM profiles WHERE id = $1`, [colab.profile_id]);
     }
   },
 };
 
 export const cargoService = {
   async list() {
-    const { data } = await supabase.from('cargos').select('*').order('nome');
-    return data as Cargo[];
+    return query<Cargo>(`SELECT * FROM cargos ORDER BY nome`);
   },
 
   async create(payload: Partial<Cargo>) {
-    const { data, error } = await supabase.from('cargos').insert(payload).select().single();
-    if (error) throw new Error(error.message);
-    return data as Cargo;
+    const row = await queryOne<Cargo>(
+      `INSERT INTO cargos (nome, descricao, salario_base, carga_horaria_semanal)
+       VALUES ($1, $2, $3, $4)
+       RETURNING *`,
+      [payload.nome, payload.descricao || null, payload.salario_base ?? 0, payload.carga_horaria_semanal ?? 44],
+    );
+    if (!row) throw new Error('Erro ao criar cargo');
+    return row;
   },
 
   async update(id: string, payload: Partial<Cargo>) {
-    const { data, error } = await supabase.from('cargos').update(payload).eq('id', id).select().single();
-    if (error) throw new Error(error.message);
-    return data as Cargo;
+    const { text, params } = buildUpdateSql('cargos', payload);
+    const row = await queryOne<Cargo>(text, [id, ...params]);
+    if (!row) throw new Error('Cargo não encontrado');
+    return row;
   },
 };
 
@@ -76,27 +93,22 @@ export const pontoService = {
     const [y, m] = mes.split('-').map(Number);
     const inicio = `${y}-${String(m).padStart(2, '0')}-01`;
     const fim = `${y}-${String(m).padStart(2, '0')}-${new Date(y, m, 0).getDate()}`; // ultimo dia do mes
-    const { data } = await supabase
-      .from('registros_ponto')
-      .select('*')
-      .eq('colaborador_id', colaboradorId)
-      .gte('data', inicio)
-      .lte('data', fim)
-      .order('data');
-    return data as RegistroPonto[];
+    return query<RegistroPonto>(
+      `SELECT * FROM registros_ponto
+       WHERE colaborador_id = $1 AND data BETWEEN $2 AND $3
+       ORDER BY data`,
+      [colaboradorId, inicio, fim],
+    );
   },
 
   async baterPonto(colaboradorId: string, tipo: string) {
     const hoje = new Date().toISOString().split('T')[0];
     const hora = new Date().toTimeString().split(' ')[0];
 
-    // Verifica se já existe registro hoje
-    const { data: existente } = await supabase
-      .from('registros_ponto')
-      .select('*')
-      .eq('colaborador_id', colaboradorId)
-      .eq('data', hoje)
-      .single();
+    const existente = await queryOne<RegistroPonto>(
+      `SELECT * FROM registros_ponto WHERE colaborador_id = $1 AND data = $2`,
+      [colaboradorId, hoje],
+    );
 
     if (existente) {
       const update: Record<string, string> = {};
@@ -105,8 +117,13 @@ export const pontoService = {
       else if (tipo === 'volta_almoco') update.volta_almoco = hora;
       else if (tipo === 'saida') update.saida = hora;
 
-      const { data } = await supabase.from('registros_ponto').update(update).eq('id', existente.id).select().single();
-      return data;
+      if (Object.keys(update).length === 0) return existente;
+      return queryOne<RegistroPonto>(
+        `UPDATE registros_ponto SET ${Object.keys(update)
+          .map((k, i) => `"${k}" = $${i + 2}`)
+          .join(', ')} WHERE id = $1 RETURNING *`,
+        [existente.id, ...Object.values(update)],
+      );
     } else {
       const insert: Record<string, string> = { colaborador_id: colaboradorId, data: hoje };
       if (tipo === 'entrada') insert.entrada = hora;
@@ -114,37 +131,62 @@ export const pontoService = {
       else if (tipo === 'volta_almoco') insert.volta_almoco = hora;
       else if (tipo === 'saida') insert.saida = hora;
 
-      const { data } = await supabase.from('registros_ponto').insert(insert).select().single();
-      return data;
+      return queryOne<RegistroPonto>(
+        `INSERT INTO registros_ponto (${Object.keys(insert)
+          .map((k) => `"${k}"`)
+          .join(', ')}) VALUES (${Object.keys(insert)
+          .map((_, i) => `$${i + 1}`)
+          .join(', ')}) RETURNING *`,
+        Object.values(insert),
+      );
     }
   },
 
   async updateRegistroPonto(id: string, payload: { entrada?: string; saida_almoco?: string; volta_almoco?: string; saida?: string }) {
-    const { data, error } = await supabase.from('registros_ponto').update(payload).eq('id', id).select().single();
-    if (error) throw new Error(error.message);
-    return data as RegistroPonto;
+    const { text, params } = buildUpdateSql('registros_ponto', payload);
+    const row = await queryOne<RegistroPonto>(text, [id, ...params]);
+    if (!row) throw new Error('Registro de ponto não encontrado');
+    return row;
   },
 };
 
 export const faltasService = {
   async list() {
-    const { data } = await supabase
-      .from('faltas')
-      .select('*, colaborador:colaboradores(nome)')
-      .order('data', { ascending: false });
-    return data as Falta[];
+    return query<Falta>(
+      `SELECT f.*,
+         CASE WHEN c.id IS NULL THEN NULL
+              ELSE jsonb_build_object('nome', c.nome)
+         END AS colaborador
+       FROM faltas f
+       LEFT JOIN colaboradores c ON c.id = f.colaborador_id
+       ORDER BY f.data DESC`,
+    );
   },
 
   async create(payload: Partial<Falta>) {
-    const { data, error } = await supabase.from('faltas').insert(payload).select().single();
-    if (error) throw new Error(error.message);
-    return data as Falta;
+    const row = await queryOne<Falta>(
+      `INSERT INTO faltas (colaborador_id, data, tipo, justificativa, abonada)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING *`,
+      [
+        payload.colaborador_id,
+        payload.data,
+        payload.tipo || 'sem_justificativa',
+        payload.justificativa || null,
+        payload.abonada ?? false,
+      ],
+    );
+    if (!row) throw new Error('Erro ao registrar falta');
+    return row;
   },
 
   async toggleAbonada(id: string) {
-    const { data: atual } = await supabase.from('faltas').select('abonada').eq('id', id).single();
+    const atual = await queryOne<Falta>(`SELECT * FROM faltas WHERE id = $1`, [id]);
     if (!atual) throw new Error('Falta não encontrada');
-    const { data } = await supabase.from('faltas').update({ abonada: !atual.abonada }).eq('id', id).select().single();
-    return data as Falta;
+    const row = await queryOne<Falta>(
+      `UPDATE faltas SET abonada = $2 WHERE id = $1 RETURNING *`,
+      [id, !atual.abonada],
+    );
+    return row;
   },
 };

@@ -1,4 +1,4 @@
-import { supabase } from '../lib/supabase.js';
+import { query, queryOne } from '../lib/db.js';
 import { EventoExterno, PrevisaoDemanda } from '../types/index.js';
 import { addDays, format, getDay } from 'date-fns';
 import { aiService } from './aiService.js';
@@ -17,26 +17,30 @@ const cache = {
 
 export const previsaoService = {
   async getPrevisao(produtoId: string): Promise<PrevisaoDemanda> {
-    const { data: produto } = await supabase
-      .from('produtos')
-      .select('*, categoria:categorias_produto(*)')
-      .eq('id', produtoId)
-      .single();
+    const produto = await queryOne<any>(
+      `SELECT p.*, to_jsonb(cat) AS categoria
+       FROM produtos p
+       LEFT JOIN categorias_produto cat ON cat.id = p.categoria_id
+       WHERE p.id = $1`,
+      [produtoId],
+    );
 
     if (!produto) throw new Error('Produto não encontrado');
 
-    const { data: itens } = await supabase
-      .from('itens_venda')
-      .select('quantidade, venda:vendas(data_venda)')
-      .eq('produto_id', produtoId)
-      .order('venda(data_venda)', { ascending: true })
-      .gte('venda.data_venda', format(addDays(new Date(), -84), 'yyyy-MM-dd'));
+    const itens = await query<any>(
+      `SELECT iv.quantidade, to_jsonb(v) AS venda
+       FROM itens_venda iv
+       JOIN vendas v ON v.id = iv.venda_id
+       WHERE iv.produto_id = $1 AND v.data_venda >= $2
+       ORDER BY v.data_venda ASC`,
+      [produtoId, format(addDays(new Date(), -84), 'yyyy-MM-dd')],
+    );
 
     let historico: { data: string; quantidade: number }[] = [];
 
     if (itens && itens.length > 0) {
       historico = itens.map((d: any) => ({
-        data: format(new Date(d.venda.data_venda), 'yyyy-MM-dd'),
+        data: String(d.venda.data_venda).slice(0, 10),
         quantidade: d.quantidade,
       }));
     }
@@ -117,7 +121,7 @@ export const previsaoService = {
     cache.analisando = true;
     console.log('[Previsao] Background: iniciando...');
 
-    const { data: produtos } = await supabase.from('produtos').select('id');
+    const produtos = await query<{ id: string }>(`SELECT id FROM produtos`);
     if (!produtos) { cache.analisando = false; return; }
 
     const CONCURRENCY = 3;
@@ -173,7 +177,7 @@ export const previsaoService = {
   },
 
   async getRecomendacoesGlobais() {
-    const { data: produtos } = await supabase.from('produtos').select('*');
+    const produtos = await query<any>(`SELECT * FROM produtos`);
     if (!produtos) return { baixos: [], excessos: [] };
     return {
       baixos: produtos.filter((p: any) => p.estoque_atual <= p.estoque_minimo).slice(0, 5),
@@ -182,18 +186,22 @@ export const previsaoService = {
   },
 
   async getRecomendacoesIA() {
-    const { data: produtos } = await supabase
-      .from('produtos')
-      .select('*, categoria:categorias_produto(nome)');
+    const produtos = await query<any>(
+      `SELECT p.*, to_jsonb(cat) AS categoria
+       FROM produtos p
+       LEFT JOIN categorias_produto cat ON cat.id = p.categoria_id`,
+    );
 
     if (!produtos || produtos.length === 0) return [];
 
     const resumoProdutos = await Promise.all(produtos.map(async (p: any) => {
-      const { data: itens } = await supabase
-        .from('itens_venda')
-        .select('quantidade, venda:vendas(data_venda)')
-        .eq('produto_id', p.id)
-        .gte('venda.data_venda', format(addDays(new Date(), -84), 'yyyy-MM-dd'));
+      const itens = await query<{ quantidade: number }>(
+        `SELECT iv.quantidade
+         FROM itens_venda iv
+         JOIN vendas v ON v.id = iv.venda_id
+         WHERE iv.produto_id = $1 AND v.data_venda >= $2`,
+        [p.id, format(addDays(new Date(), -84), 'yyyy-MM-dd')],
+      );
 
       let mediaDiaria = 0;
       let tendencia = 'estável';

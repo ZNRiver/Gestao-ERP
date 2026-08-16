@@ -1,15 +1,23 @@
-import { supabase } from '../lib/supabase.js';
-import { Venda, ItemVenda } from '../types/index.js';
+import { pool, query, queryOne } from '../lib/db.js';
+import { Venda } from '../types/index.js';
 import { previsaoService } from './previsaoService.js';
 
 export const vendaService = {
   async list(limit = 100) {
-    const { data } = await supabase
-      .from('vendas')
-      .select('*, vendedor:colaboradores(nome), cliente:clientes(nome, documento), itens:itens_venda(*)')
-      .order('data_venda', { ascending: false })
-      .limit(limit);
-    return data as Venda[];
+    return query<Venda>(
+      `SELECT v.*,
+         CASE WHEN ve.id IS NULL THEN NULL ELSE jsonb_build_object('nome', ve.nome) END AS vendedor,
+         CASE WHEN cl.id IS NULL THEN NULL
+              ELSE jsonb_build_object('nome', cl.nome, 'documento', cl.documento)
+         END AS cliente,
+         COALESCE((SELECT jsonb_agg(to_jsonb(iv)) FROM itens_venda iv WHERE iv.venda_id = v.id), '[]'::jsonb) AS itens
+       FROM vendas v
+       LEFT JOIN colaboradores ve ON ve.id = v.vendedor_id
+       LEFT JOIN clientes cl ON cl.id = v.cliente_id
+       ORDER BY v.data_venda DESC, v.created_at DESC
+       LIMIT $1`,
+      [limit],
+    );
   },
 
   async create(payload: {
@@ -23,56 +31,68 @@ export const vendaService = {
     const desconto = payload.desconto || 0;
     const valorFinal = Math.max(0, subtotal - desconto);
 
-    // Busca dados do cliente se informado
-    let clienteNome = payload.cliente_nome || null;
-    if (payload.cliente_id) {
-      const { data: cli } = await supabase.from('clientes').select('nome').eq('id', payload.cliente_id).single();
-      if (cli) clienteNome = cli.nome;
-    }
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
 
-    // Cria venda
-    const { data: venda, error } = await supabase.from('vendas').insert({
-      vendedor_id: payload.vendedor_id || null,
-      cliente_id: payload.cliente_id || null,
-      cliente_nome: clienteNome,
-      valor_total: subtotal,
-      desconto,
-      valor_final: valorFinal,
-      status: 'aprovado',
-    }).select().single();
-
-    if (error || !venda) throw new Error('Erro ao criar venda');
-
-    // Insere itens
-    const itens = payload.itens.map(i => ({
-      venda_id: venda.id,
-      produto_id: i.produto_id,
-      quantidade: i.quantidade,
-      valor_unitario: i.valor_unitario,
-      valor_total: i.quantidade * i.valor_unitario,
-    }));
-    await supabase.from('itens_venda').insert(itens);
-
-    // Atualiza estoque de cada produto
-    for (const item of payload.itens) {
-      const { data: prod } = await supabase.from('produtos').select('estoque_atual').eq('id', item.produto_id).single();
-      if (prod) {
-        await supabase.from('produtos').update({
-          estoque_atual: Math.max(0, prod.estoque_atual - item.quantidade)
-        }).eq('id', item.produto_id);
+      // Busca dados do cliente se informado
+      let clienteNome = payload.cliente_nome || null;
+      if (payload.cliente_id) {
+        const cli = await client.query<{ nome: string }>(`SELECT nome FROM clientes WHERE id = $1`, [
+          payload.cliente_id,
+        ]);
+        if (cli.rows.length > 0) clienteNome = cli.rows[0].nome;
       }
+
+      // Cria venda
+      const vendaRes = await client.query<Venda>(
+        `INSERT INTO vendas (vendedor_id, cliente_id, cliente_nome, valor_total, desconto, valor_final, status)
+         VALUES ($1, $2, $3, $4, $5, $6, 'aprovado')
+         RETURNING *`,
+        [payload.vendedor_id || null, payload.cliente_id || null, clienteNome, subtotal, desconto, valorFinal],
+      );
+      const venda = vendaRes.rows[0];
+      if (!venda) throw new Error('Erro ao criar venda');
+
+      // Insere itens
+      for (const item of payload.itens) {
+        await client.query(
+          `INSERT INTO itens_venda (venda_id, produto_id, quantidade, valor_unitario, valor_total)
+           VALUES ($1, $2, $3, $4, $5)`,
+          [venda.id, item.produto_id, item.quantidade, item.valor_unitario, item.quantidade * item.valor_unitario],
+        );
+
+        // Atualiza estoque do produto
+        const prod = await client.query<{ estoque_atual: number }>(
+          `SELECT estoque_atual FROM produtos WHERE id = $1 FOR UPDATE`,
+          [item.produto_id],
+        );
+        if (prod.rows.length > 0) {
+          await client.query(`UPDATE produtos SET estoque_atual = $2, updated_at = now() WHERE id = $1`, [
+            item.produto_id,
+            Math.max(0, prod.rows[0].estoque_atual - item.quantidade),
+          ]);
+        }
+      }
+
+      await client.query('COMMIT');
+
+      // Reanalisa apenas os produtos afetados pela venda (não bloqueia)
+      const idsAfetados = payload.itens.map((i) => i.produto_id);
+      previsaoService.onVendaCriada(idsAfetados).catch(() => {});
+
+      return venda;
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
     }
-
-    // Reanalisa apenas os produtos afetados pela venda (não bloqueia)
-    const idsAfetados = payload.itens.map(i => i.produto_id);
-    previsaoService.onVendaCriada(idsAfetados).catch(() => {});
-
-    return venda as Venda;
   },
 
   async updateStatus(id: string, status: string) {
-    const { data, error } = await supabase.from('vendas').update({ status }).eq('id', id).select().single();
-    if (error) throw new Error(error.message);
-    return data as Venda;
+    const row = await queryOne<Venda>(`UPDATE vendas SET status = $2 WHERE id = $1 RETURNING *`, [id, status]);
+    if (!row) throw new Error('Venda não encontrada');
+    return row;
   },
 };

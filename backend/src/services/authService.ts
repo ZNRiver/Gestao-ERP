@@ -1,171 +1,131 @@
-import { createClient } from '@supabase/supabase-js';
-import { supabase } from '../lib/supabase.js';
+import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
+import { randomUUID } from 'crypto';
+import { query, queryOne } from '../lib/db.js';
 import { JwtPayload, Profile, UserRole } from '../types/index.js';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
 
+const PROFILE_COLS = 'id, nome, email, role, avatar_url, telefone, created_at, updated_at';
+
+function signToken(profile: { id: string; email: string; role: UserRole; nome: string }): string {
+  const payload: JwtPayload = { sub: profile.id, email: profile.email, role: profile.role, nome: profile.nome };
+  return jwt.sign(payload, JWT_SECRET, { expiresIn: '24h' });
+}
+
 export const authService = {
-  /** Login: autentica no Supabase e devolve JWT próprio + profile */
+  /** Login: valida credenciais no PostgreSQL e devolve JWT próprio + profile */
   async login(email: string, password: string) {
-    // Use a disposable client for signInWithPassword so the main
-    // service-role client isn't polluted with a user session (which
-    // would cause RLS policies to apply instead of bypassing them).
-    const loginClient = createClient(
-      process.env.SUPABASE_URL!,
-      process.env.SUPABASE_SERVICE_ROLE_KEY!,
-      { auth: { autoRefreshToken: false, persistSession: false } },
+    const row = await queryOne<Profile & { password_hash: string }>(
+      `SELECT ${PROFILE_COLS}, password_hash FROM profiles WHERE email = $1`,
+      [email],
     );
-    const { data, error } = await loginClient.auth.signInWithPassword({ email, password });
-    if (error || !data.user) {
-      throw new Error('Credenciais inválidas');
-    }
 
-    const { data: profile } = await supabase
-      .from('profiles')
-      .select('*')
-      .eq('id', data.user.id)
-      .single();
+    if (!row) throw new Error('Credenciais inválidas');
 
-    if (!profile) {
-      throw new Error('Perfil não encontrado. Peça ao admin para criar seu perfil.');
-    }
+    const senhaOk = await bcrypt.compare(password, row.password_hash);
+    if (!senhaOk) throw new Error('Credenciais inválidas');
 
-    const payload: JwtPayload = {
-      sub: profile.id,
-      email: profile.email,
-      role: profile.role,
-      nome: profile.nome,
-    };
-
-    const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '24h' });
-
-    return { token, profile: profile as Profile };
+    const { password_hash: _ph, ...profile } = row;
+    return { token: signToken(profile), profile: profile as Profile };
   },
 
   /** Setup inicial: cria o primeiro admin (só funciona se não existir nenhum admin ainda) */
   async setupAdmin(email: string, password: string, nome: string) {
-    // Verifica se já existe algum admin
-    const { count } = await supabase
-      .from('profiles')
-      .select('*', { count: 'exact', head: true })
-      .eq('role', 'admin');
-
-    if (count && count > 0) {
+    const admin = await queryOne<{ total: number }>(
+      `SELECT COUNT(*)::int AS total FROM profiles WHERE role = 'admin'`,
+    );
+    if (admin && admin.total > 0) {
       throw new Error('Já existe um admin cadastrado. Use o endpoint de login.');
     }
 
-    // Cria o usuário no Auth do Supabase
-    const { data: authData, error: authError } = await supabase.auth.admin.createUser({
-      email,
-      password,
-      email_confirm: true,
-      user_metadata: { nome },
+    const id = randomUUID();
+    const password_hash = await bcrypt.hash(password, 10);
+
+    const profile = await queryOne<Profile>(
+      `INSERT INTO profiles (id, nome, email, role, password_hash)
+       VALUES ($1, $2, $3, 'admin', $4)
+       RETURNING ${PROFILE_COLS}`,
+      [id, nome, email, password_hash],
+    ).catch((err: any) => {
+      if (err.code === '23505') throw new Error('Já existe um usuário com este email');
+      throw err;
     });
 
-    if (authError || !authData.user) {
-      throw new Error('Erro ao criar usuário: ' + (authError?.message || 'desconhecido'));
-    }
+    if (!profile) throw new Error('Erro ao criar perfil');
 
-    // Cria o perfil admin vinculado ao auth user
-    const { data: profile, error: profileError } = await supabase
-      .from('profiles')
-      .insert({
-        id: authData.user.id,
-        nome,
-        email,
-        role: 'admin',
-      })
-      .select()
-      .single();
-
-    if (profileError) {
-      // Rollback: deleta o auth user
-      await supabase.auth.admin.deleteUser(authData.user.id);
-      throw new Error('Erro ao criar perfil: ' + profileError.message);
-    }
-
-    // Gera o token JWT
-    const payload: JwtPayload = {
-      sub: profile.id,
-      email: profile.email,
-      role: profile.role,
-      nome: profile.nome,
-    };
-
-    const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '24h' });
-
-    return { token, profile: profile as Profile };
+    return { token: signToken(profile), profile };
   },
 
   async getProfile(userId: string) {
-    const { data, error } = await supabase
-      .from('profiles')
-      .select('*')
-      .eq('id', userId)
-      .single();
-    if (error) throw new Error('Perfil não encontrado');
-    return data as Profile;
+    const profile = await queryOne<Profile>(
+      `SELECT ${PROFILE_COLS} FROM profiles WHERE id = $1`,
+      [userId],
+    );
+    if (!profile) throw new Error('Perfil não encontrado');
+    return profile;
   },
 
   async listProfiles() {
-    const { data, error } = await supabase
-      .from('profiles')
-      .select('*')
-      .order('nome');
-    if (error) throw new Error('Erro ao listar perfis');
-    return data as Profile[];
+    return query<Profile>(`SELECT ${PROFILE_COLS} FROM profiles ORDER BY nome`);
   },
 
-  async createProfile(profileData: Partial<Profile>) {
-    const { data, error } = await supabase
-      .from('profiles')
-      .insert(profileData)
-      .select()
-      .single();
-    if (error) throw new Error('Erro ao criar perfil: ' + error.message);
-    return data as Profile;
+  async createProfile(profileData: Partial<Profile> & { password: string }) {
+    if (!profileData.password) throw new Error('Senha obrigatória');
+    const id = profileData.id || randomUUID();
+    const password_hash = await bcrypt.hash(profileData.password, 10);
+
+    const profile = await queryOne<Profile>(
+      `INSERT INTO profiles (id, nome, email, role, avatar_url, telefone, password_hash)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       RETURNING ${PROFILE_COLS}`,
+      [
+        id,
+        profileData.nome,
+        profileData.email,
+        profileData.role || 'trabalhador',
+        profileData.avatar_url || null,
+        profileData.telefone || null,
+        password_hash,
+      ],
+    ).catch((err: any) => {
+      if (err.code === '23505') throw new Error('Já existe um usuário com este email');
+      throw err;
+    });
+
+    if (!profile) throw new Error('Erro ao criar perfil');
+    return profile;
   },
 
   async createUser(nome: string, email: string, password: string, role: UserRole, colaboradorId?: string) {
-    const { data: authData, error: authError } = await supabase.auth.admin.createUser({
-      email,
-      password,
-      email_confirm: true,
-      user_metadata: { nome },
+    const id = randomUUID();
+    const password_hash = await bcrypt.hash(password, 10);
+
+    const profile = await queryOne<Profile>(
+      `INSERT INTO profiles (id, nome, email, role, password_hash)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING ${PROFILE_COLS}`,
+      [id, nome, email, role, password_hash],
+    ).catch((err: any) => {
+      if (err.code === '23505') throw new Error('Já existe um usuário com este email');
+      throw err;
     });
 
-    if (authError || !authData.user) {
-      throw new Error('Erro ao criar usuário: ' + (authError?.message || 'desconhecido'));
-    }
-
-    const { data: profile, error: profileError } = await supabase
-      .from('profiles')
-      .insert({ id: authData.user.id, nome, email, role })
-      .select()
-      .single();
-
-    if (profileError) {
-      await supabase.auth.admin.deleteUser(authData.user.id);
-      throw new Error('Erro ao criar perfil: ' + profileError.message);
-    }
+    if (!profile) throw new Error('Erro ao criar usuário');
 
     if (colaboradorId) {
-      await supabase.from('colaboradores').update({ profile_id: authData.user.id }).eq('id', colaboradorId);
+      await query(`UPDATE colaboradores SET profile_id = $1 WHERE id = $2`, [id, colaboradorId]);
     }
 
-    return { profile: profile as Profile };
+    return { profile };
   },
 
   async deleteProfile(profileId: string) {
-    // Limpa profile_id do colaborador vinculado
-    await supabase.from('colaboradores').update({ profile_id: null }).eq('profile_id', profileId);
-
-    // Deleta o perfil
-    const { error } = await supabase.from('profiles').delete().eq('id', profileId);
-    if (error) throw new Error('Erro ao excluir perfil: ' + error.message);
-
-    // Deleta o usuário do Auth do Supabase (email, senha, etc.)
-    await supabase.auth.admin.deleteUser(profileId);
+    const deleted = await query<{ id: string }>(
+      `DELETE FROM profiles WHERE id = $1 RETURNING id`,
+      [profileId],
+    );
+    if (deleted.length === 0) throw new Error('Perfil não encontrado');
+    // colaboradores.profile_id é limpo automaticamente via ON DELETE SET NULL
   },
 };

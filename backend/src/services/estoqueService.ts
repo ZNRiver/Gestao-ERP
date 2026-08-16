@@ -1,13 +1,18 @@
-import { supabase } from '../lib/supabase.js';
-import { Produto, CategoriaProduto, MovimentacaoEstoque } from '../types/index.js';
+import { buildUpdateSql, pool, query, queryOne } from '../lib/db.js';
+import { CategoriaProduto, MovimentacaoEstoque, Produto } from '../types/index.js';
 
 export const produtoService = {
   async list() {
-    const { data } = await supabase
-      .from('produtos')
-      .select('*, categoria:categorias_produto(*), fornecedor:fornecedores(nome)')
-      .order('descricao');
-    return data as Produto[];
+    return query<Produto>(
+      `SELECT p.*, to_jsonb(cat) AS categoria,
+         CASE WHEN f.id IS NULL THEN NULL
+              ELSE jsonb_build_object('nome', f.nome)
+         END AS fornecedor
+       FROM produtos p
+       LEFT JOIN categorias_produto cat ON cat.id = p.categoria_id
+       LEFT JOIN fornecedores f ON f.id = p.fornecedor_id
+       ORDER BY p.descricao`,
+    );
   },
 
   async create(payload: Partial<Produto>) {
@@ -15,26 +20,39 @@ export const produtoService = {
       const random = Math.random().toString(36).substring(2, 8).toUpperCase();
       payload.codigo = `PROD-${random}`;
     }
-    const { data, error } = await supabase.from('produtos').insert(payload).select().single();
-    if (error) throw new Error(error.message);
-    return data as Produto;
+    const row = await queryOne<Produto>(
+      `INSERT INTO produtos
+         (codigo, descricao, categoria_id, fornecedor_id, preco_custo, preco_venda, estoque_atual, estoque_minimo, estoque_maximo, unidade, ativo)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+       RETURNING *`,
+      [
+        payload.codigo,
+        payload.descricao,
+        payload.categoria_id || null,
+        payload.fornecedor_id || null,
+        payload.preco_custo ?? 0,
+        payload.preco_venda ?? 0,
+        payload.estoque_atual ?? 0,
+        payload.estoque_minimo ?? 0,
+        payload.estoque_maximo ?? 0,
+        payload.unidade || 'un',
+        payload.ativo ?? true,
+      ],
+    );
+    if (!row) throw new Error('Erro ao criar produto');
+    return row;
   },
 
   async update(id: string, payload: Partial<Produto>) {
-    const { data, error } = await supabase.from('produtos').update(payload).eq('id', id).select().single();
-    if (error) throw new Error(error.message);
-    return data as Produto;
+    const { text, params } = buildUpdateSql('produtos', payload, { withUpdatedAt: true });
+    const row = await queryOne<Produto>(text, [id, ...params]);
+    if (!row) throw new Error('Produto não encontrado');
+    return row;
   },
 
   async delete(id: string) {
-    // Remove registros relacionados antes de excluir o produto
-    await supabase.from('itens_venda').delete().eq('produto_id', id);
-    await supabase.from('movimentacoes_estoque').delete().eq('produto_id', id);
-    await supabase.from('previsao_demanda').delete().eq('produto_id', id);
-    await supabase.from('alertas').delete().eq('produto_id', id);
-
-    const { error } = await supabase.from('produtos').delete().eq('id', id);
-    if (error) throw new Error(error.message);
+    // Registros relacionados são removidos via ON DELETE CASCADE
+    await query(`DELETE FROM produtos WHERE id = $1`, [id]);
 
     // Limpa do cache de previsão
     const { previsaoService } = await import('./previsaoService.js');
@@ -44,65 +62,95 @@ export const produtoService = {
 
 export const categoriaService = {
   async list() {
-    const { data } = await supabase.from('categorias_produto').select('*').order('nome');
-    return data as CategoriaProduto[];
+    return query<CategoriaProduto>(`SELECT * FROM categorias_produto ORDER BY nome`);
   },
 
   async create(payload: Partial<CategoriaProduto>) {
-    const { data, error } = await supabase.from('categorias_produto').insert(payload).select().single();
-    if (error) throw new Error(error.message);
-    return data as CategoriaProduto;
+    const row = await queryOne<CategoriaProduto>(
+      `INSERT INTO categorias_produto (nome, descricao, icone)
+       VALUES ($1, $2, $3)
+       RETURNING *`,
+      [payload.nome, payload.descricao || null, payload.icone || null],
+    );
+    if (!row) throw new Error('Erro ao criar categoria');
+    return row;
   },
 
   async update(id: string, payload: Partial<CategoriaProduto>) {
-    const { data, error } = await supabase.from('categorias_produto').update(payload).eq('id', id).select().single();
-    if (error) throw new Error(error.message);
-    return data as CategoriaProduto;
+    const { text, params } = buildUpdateSql('categorias_produto', payload);
+    const row = await queryOne<CategoriaProduto>(text, [id, ...params]);
+    if (!row) throw new Error('Categoria não encontrada');
+    return row;
   },
 
   async delete(id: string) {
-    await supabase.from('produtos').update({ categoria_id: null }).eq('categoria_id', id);
-    const { error } = await supabase.from('categorias_produto').delete().eq('id', id);
-    if (error) throw new Error(error.message);
+    await query(`UPDATE produtos SET categoria_id = NULL WHERE categoria_id = $1`, [id]);
+    await query(`DELETE FROM categorias_produto WHERE id = $1`, [id]);
   },
 };
 
 export const movimentacaoService = {
   async list(limit = 100) {
-    const { data } = await supabase
-      .from('movimentacoes_estoque')
-      .select('*, produto:produtos(descricao, unidade, estoque_atual)')
-      .order('created_at', { ascending: false })
-      .limit(limit);
-    return data as MovimentacaoEstoque[];
+    return query<MovimentacaoEstoque>(
+      `SELECT m.*,
+         CASE WHEN p.id IS NULL THEN NULL
+              ELSE jsonb_build_object('descricao', p.descricao, 'unidade', p.unidade, 'estoque_atual', p.estoque_atual)
+         END AS produto
+       FROM movimentacoes_estoque m
+       LEFT JOIN produtos p ON p.id = m.produto_id
+       ORDER BY m.created_at DESC
+       LIMIT $1`,
+      [limit],
+    );
   },
 
   async create(payload: { produto_id: string; tipo: string; quantidade: number; valor_unitario?: number; motivo?: string; colaborador_id?: string }) {
     const vu = payload.valor_unitario || 0;
     const qtd = Math.abs(payload.quantidade);
     const sinal = ['saida', 'perda'].includes(payload.tipo) ? -qtd : qtd;
-    const record = {
-      produto_id: payload.produto_id,
-      tipo: payload.tipo,
-      quantidade: sinal,
-      valor_unitario: vu,
-      valor_total: qtd * vu,
-      motivo: payload.motivo || null,
-      colaborador_id: payload.colaborador_id || null,
-    };
 
-    // Atualiza estoque
-    const { data: prod } = await supabase.from('produtos').select('estoque_atual').eq('id', payload.produto_id).single();
-    if (prod) {
-      let novo = prod.estoque_atual;
-      if (['entrada', 'producao'].includes(payload.tipo)) novo += qtd;
-      else if (['saida', 'perda'].includes(payload.tipo)) novo -= qtd;
-      await supabase.from('produtos').update({ estoque_atual: Math.max(0, novo) }).eq('id', payload.produto_id);
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      // Atualiza estoque
+      const prod = await client.query<{ estoque_atual: number }>(
+        `SELECT estoque_atual FROM produtos WHERE id = $1 FOR UPDATE`,
+        [payload.produto_id],
+      );
+      if (prod.rows.length > 0) {
+        let novo = prod.rows[0].estoque_atual;
+        if (['entrada', 'producao'].includes(payload.tipo)) novo += qtd;
+        else if (['saida', 'perda'].includes(payload.tipo)) novo -= qtd;
+        await client.query(`UPDATE produtos SET estoque_atual = $2, updated_at = now() WHERE id = $1`, [
+          payload.produto_id,
+          Math.max(0, novo),
+        ]);
+      }
+
+      const inserted = await client.query<MovimentacaoEstoque>(
+        `INSERT INTO movimentacoes_estoque
+           (produto_id, tipo, quantidade, valor_unitario, valor_total, motivo, colaborador_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         RETURNING *`,
+        [
+          payload.produto_id,
+          payload.tipo,
+          sinal,
+          vu,
+          qtd * vu,
+          payload.motivo || null,
+          payload.colaborador_id || null,
+        ],
+      );
+
+      await client.query('COMMIT');
+      return inserted.rows[0];
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
     }
-
-    const { data, error } = await supabase.from('movimentacoes_estoque').insert(record).select().single();
-    if (error) throw new Error(error.message);
-
-    return data as MovimentacaoEstoque;
   },
 };

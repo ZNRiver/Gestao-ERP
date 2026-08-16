@@ -20,6 +20,7 @@ import funcoesRoutes from './routes/funcoes.js';
 import fornecedoresRoutes from './routes/fornecedores.js';
 import clientesRoutes from './routes/clientes.js';
 import { previsaoService } from './services/previsaoService.js';
+import { runMigrations } from './db/migrate.js';
 
 dotenv.config();
 
@@ -71,26 +72,33 @@ app.use(errorHandler);
 // ============================================================
 // Inicialização
 // ============================================================
-app.listen(PORT, () => {
-  console.log('');
-  console.log('╔══════════════════════════════════════════╗');
-  console.log('║  🏢  ERP Backend API                     ║');
-  console.log(`║  🚀  Rodando em http://localhost:${PORT}    ║`);
-  console.log('║  📋  Health:  /api/health               ║');
-  console.log('║  🔐  Auth:    /api/auth/*                ║');
-  console.log('║  📊  Dash:    /api/dashboard             ║');
-  console.log('║  👥  RH:      /api/rh/*                  ║');
-  console.log('║  📦  Estoque: /api/estoque/*             ║');
-  console.log('║  💰  Vendas:  /api/vendas/*              ║');
-  console.log('║  🧠  Previsão:/api/previsao/*            ║');
-  console.log('║  🔔  Alertas: /api/alertas/*             ║');
-  console.log('╚══════════════════════════════════════════╝');
-  console.log('');
+runMigrations()
+  .then(() => {
+    app.listen(PORT, () => {
+      console.log('');
+      console.log('╔══════════════════════════════════════════╗');
+      console.log('║  🏢  ERP Backend API                     ║');
+      console.log(`║  🚀  Rodando em http://localhost:${PORT}    ║`);
+      console.log('║  📋  Health:  /api/health               ║');
+      console.log('║  🔐  Auth:    /api/auth/*                ║');
+      console.log('║  📊  Dash:    /api/dashboard             ║');
+      console.log('║  👥  RH:      /api/rh/*                  ║');
+      console.log('║  📦  Estoque: /api/estoque/*             ║');
+      console.log('║  💰  Vendas:  /api/vendas/*              ║');
+      console.log('║  🧠  Previsão:/api/previsao/*            ║');
+      console.log('║  🔔  Alertas: /api/alertas/*             ║');
+      console.log('╚══════════════════════════════════════════╝');
+      console.log('');
 
-  // Inicia análise preditiva em background para todos os produtos e calendário
-  previsaoService.analisarTodosBackground().catch((err: any) =>
-    console.error('[Previsao] Erro na análise inicial:', err.message)
-  );
-});
+      // Inicia análise preditiva em background para todos os produtos e calendário
+      previsaoService.analisarTodosBackground().catch((err: any) =>
+        console.error('[Previsao] Erro na análise inicial:', err.message)
+      );
+    });
+  })
+  .catch((err) => {
+    console.error('[DB] ❌ Falha ao preparar o banco:', err.message);
+    process.exit(1);
+  });
 
 export default app;
