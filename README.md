@@ -45,7 +45,7 @@ O banco é **PostgreSQL** (container `postgres`, exposto em `localhost:5433`, us
 
 ```bash
 # 1. Configurar o .env na raiz (obrigatório: JWT_SECRET; opcionais: ADMIN_*, NVIDIA_API_KEY)
-#    Referência: variáveis usadas pelo backend (DATABASE_URL, JWT_SECRET, CORS_ORIGIN, NVIDIA_API_KEY, ADMIN_*)
+cp .env.example .env   # template versionado; preencha JWT_SECRET antes de subir
 
 # 2. Construir e iniciar
 cd .
