@@ -69,6 +69,7 @@ desktop.ini
 tmp/
 temp/
 .cache/
+.freebuff/
 
 # =========================
 # Supabase
