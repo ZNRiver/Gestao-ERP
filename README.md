@@ -17,9 +17,8 @@ frontend/  — SPA React (Vite + TypeScript + Tailwind)
 ## Início rápido
 
 ```bash
-# Backend
+# Backend (usa o .env global da raiz como fallback)
 cd backend
-cp .env.example .env   # configurar DATABASE_URL e JWT_SECRET
 bun install
 bun run dev
 
@@ -46,7 +45,7 @@ O banco é **PostgreSQL** (container `postgres`, exposto em `localhost:5433`, us
 
 ```bash
 # 1. Configurar o .env na raiz (obrigatório: JWT_SECRET; opcionais: ADMIN_*, NVIDIA_API_KEY)
-cp backend/.env.example .env   # ou use seu backend/.env existente
+#    Referência: variáveis usadas pelo backend (DATABASE_URL, JWT_SECRET, CORS_ORIGIN, NVIDIA_API_KEY, ADMIN_*)
 
 # 2. Construir e iniciar
 cd .
