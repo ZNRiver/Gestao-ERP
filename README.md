@@ -41,7 +41,7 @@ frontend.Dockerfile   — build do frontend + Nginx
 nginx/default.conf    — proxy reverso (/api → backend:3001)
 ```
 
-O banco é **PostgreSQL** (container `postgres`, porta 5432, usuário/senha `erp`/`erp123`, database `erp`). O schema é criado automaticamente na subida do backend (`db/migrate.ts`).
+O banco é **PostgreSQL** (container `postgres`, exposto em `localhost:5433`, usuário/senha `erp`/`erp123`, database `erp`). O schema é criado automaticamente na subida do backend (`db/migrate.ts`).
 
 ### Subir os containers
 
