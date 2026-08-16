@@ -1,6 +1,12 @@
 import { Pool, types } from 'pg';
 import dotenv from 'dotenv';
+import { fileURLToPath } from 'url';
+import path from 'path';
+
+// Carrega o .env do diretório atual (ex: backend/.env) com prioridade;
+// o .env global da raiz do projeto serve como fallback.
 dotenv.config();
+dotenv.config({ path: path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..', '.env') });
 
 // O pg retorna NUMERIC como string; converte para number (comportamento esperado pela API)
 types.setTypeParser(1700, parseFloat);
