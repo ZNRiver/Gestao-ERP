@@ -25,9 +25,8 @@ bun run dev
 
 # Frontend
 cd frontend
-cp .env.example .env   # configurar VITE_API_URL
 bun install
-bun run dev
+bun run dev   # VITE_API_URL padrão: http://localhost:3001/api (override via variável de ambiente)
 ```
 
 ## Docker
