@@ -21,6 +21,7 @@ import fornecedoresRoutes from './routes/fornecedores.js';
 import clientesRoutes from './routes/clientes.js';
 import { previsaoService } from './services/previsaoService.js';
 import { runMigrations } from './db/migrate.js';
+import { ensureAdmin } from './lib/ensureAdmin.js';
 
 dotenv.config();
 
@@ -73,7 +74,9 @@ app.use(errorHandler);
 // Inicialização
 // ============================================================
 runMigrations()
-  .then(() => {
+  .then(async () => {
+    // Cria/atualiza o admin inicial a partir do .env (ADMIN_EMAIL/PASSWORD/NAME)
+    await ensureAdmin();
     app.listen(PORT, () => {
       console.log('');
       console.log('╔══════════════════════════════════════════╗');

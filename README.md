@@ -53,9 +53,9 @@ docker compose build --pull
 docker compose up -d
 ```
 
-A aplicação fica disponível em http://localhost (frontend na porta 80, com `/api` redirecionado para o backend). O banco PostgreSQL sobe junto e o schema é criado automaticamente.
+A aplicação fica disponível em http://localhost (frontend na porta 80, com `/api` redirecionado para o backend). O banco PostgreSQL sobe junto, o schema é criado automaticamente e o **admin inicial é criado/atualizado automaticamente no startup do backend** usando as variáveis `ADMIN_EMAIL`, `ADMIN_PASSWORD` e `ADMIN_NAME` do `.env` (padrões: `admin@erp.com` / `Admin@123` / `Administrador`).
 
-Para criar o primeiro usuário admin:
+Se quiser recriar/atualizar o admin manualmente (fallback):
 
 ```bash
 docker compose exec backend bun run dist/scripts/create-admin.js
